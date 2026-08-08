@@ -14,6 +14,10 @@ module util_cpack2_timestamp #(
     // Timestamp to stamp data stream with every timestamp_every blocks, in ADC clock domain
     input [63:0] timestamp,
 
+    // Coherent low word of the RX sample counter, synchronized to dma_clk.
+    // Software reads this through axi_ad9361/up_adc_gpio_in.
+    output [31:0] timestamp_cpu,
+
     /*
     ** How many NUM_OF_CHANNELS * SAMPLES_PER_CHANNEL * SAMPLE_DATA_WIDTH blocks to expect between timestamp insertions, in DMA clock domain
     ** Depending on the number of enabled channels a block may represent a different number of samples.
@@ -166,6 +170,24 @@ module util_cpack2_timestamp #(
     assign packed_timestamped_fifo_wr_en = packed_timestamped_fifo_wr_en_reg;
     assign packed_timestamped_fifo_wr_sync = packed_timestamped_fifo_wr_sync_reg;
     assign packed_timestamped_fifo_wr_data = packed_timestamped_fifo_wr_data_reg;
+
+    // The processor register is clocked independently from the ADC stream.  A
+    // closed-loop multi-bit synchronizer preserves a coherent counter word;
+    // sampling the counter bits independently could create false values at a
+    // binary carry boundary.
+    wire timestamp_cpu_sync_ready;
+    wire timestamp_cpu_sync_valid;
+    cdc_sync_data_closed #(
+        .NUM_BITS (32)
+    ) timestamp_cpu_sync (
+        .clk_in(adc_clk),
+        .clk_out(dma_clk),
+        .ready(timestamp_cpu_sync_ready),
+        .enable('b1),
+        .bits_in(timestamp[31:0]),
+        .valid(timestamp_cpu_sync_valid),
+        .bits_out(timestamp_cpu)
+    );
 
     // Module can't suffer from overflows itself, so pass downstream flag up, crossing clock domains
     wire overflow_sync_ready;
