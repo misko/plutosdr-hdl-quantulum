@@ -40,10 +40,10 @@ module cdc_sync_data_closed #(
     output [NUM_BITS-1:0] bits_out
 );
     // Input register - holding data frozen in input domain
-    reg [NUM_BITS-1:0] input_reg = 'h0;
+    (* ASYNC_REG = "TRUE" *) reg [NUM_BITS-1:0] input_reg = 'h0;
 
     // Output register - holding data captured from input domain
-    (* QUANTULUM_LTD_FALSE_PATH = 1 *) reg [NUM_BITS-1:0] output_reg = 'h0;
+    (* QUANTULUM_LTD_FALSE_PATH = 1 *) (* ASYNC_REG = "TRUE" *) reg [NUM_BITS-1:0] output_reg = 'h0;
 
     // Output valid register
     reg output_valid_reg = 'b0;
