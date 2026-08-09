@@ -88,7 +88,7 @@ module timestamp_check_pipeline_tb;
             $error("invalid timestamp was not accepted after evaluation");
             $finish;
         end
-        if (uut.timestamp_check_discard !== 1'b1) begin
+        if (uut.timestamp_decision_discard !== 1'b1) begin
             $error("invalid timestamp was classified as valid (dma timestamp %0d)", uut.timestamp_dma);
             $finish;
         end
@@ -98,6 +98,44 @@ module timestamp_check_pipeline_tb;
             $error("invalid timestamp count is %0d, expected 1", discarded_block_count);
             $finish;
         end
+
+        // The entire interval associated with the rejected timestamp must be
+        // accepted from DMA but suppressed from the FIFO.
+        for (i = 0; i < 4; i = i + 1) begin
+            @(negedge dma_clk);
+            s_axis_data = 64'hbad00000 + i;
+            #1;
+            if (s_axis_ready !== 1'b1 || uut.fifo_wr_en !== 1'b0) begin
+                $error("rejected interval payload was not discarded");
+                $finish;
+            end
+            @(posedge dma_clk);
+        end
+
+        // A subsequent valid timestamp replaces the persistent discard state
+        // and allows its payload into the FIFO.
+        @(negedge dma_clk);
+        s_axis_data = 64'd100;
+        #1;
+        if (s_axis_ready !== 1'b0) begin
+            $error("replacement timestamp bypassed registered evaluation");
+            $finish;
+        end
+        @(posedge dma_clk);
+        #1;
+        if (s_axis_ready !== 1'b1) begin
+            $error("replacement timestamp was not accepted after evaluation");
+            $finish;
+        end
+        @(posedge dma_clk);
+        @(negedge dma_clk);
+        s_axis_data = 64'h12345678;
+        #1;
+        if (s_axis_ready !== 1'b1 || uut.fifo_wr_en !== 1'b1) begin
+            $error("valid replacement timestamp did not restore FIFO writes");
+            $finish;
+        end
+        @(posedge dma_clk);
 
         // Timestamp-disabled IQ remains a zero-stall transparent path and
         // cannot affect the diagnostic count.
