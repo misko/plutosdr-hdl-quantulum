@@ -262,43 +262,39 @@ module util_upack2_timestamp #(
     **   upack reset released, transfer-start tag, read possible, read-reset busy,
     **   FIFO nonempty, downstream valid, FIFO read, downstream ready.
     */
-    reg [7:0] dma_debug_sticky = 8'h00;
-    reg [7:0] dac_debug_sticky = 8'h00;
+    wire [7:0] dma_debug_events;
+    wire [7:0] dac_debug_events;
+    wire [7:0] dma_debug_sticky;
     wire [7:0] dac_debug_sticky_dma;
 
-    always @(posedge dma_clk) begin
-        dma_debug_sticky <= dma_debug_sticky | {
-            !fifo_reset,
-            fifo_wr_possible,
-            fifo_wr_rst_busy,
-            fifo_wr_full,
-            fifo_wr_en,
-            s_axis_ready,
-            s_axis_valid,
-            s_axis_xfer_req
-        };
-    end
+    assign dma_debug_events = {
+        !fifo_reset,
+        fifo_wr_possible,
+        fifo_wr_rst_busy,
+        fifo_wr_full,
+        fifo_wr_en,
+        s_axis_ready,
+        s_axis_valid,
+        s_axis_xfer_req
+    };
+    assign dac_debug_events = {
+        !reset_upack,
+        transfer_start_dac && fifo_rd_possible,
+        fifo_rd_possible,
+        fifo_rd_rst_busy,
+        !fifo_rd_empty,
+        m_axis_valid,
+        fifo_rd_en,
+        m_axis_ready
+    };
 
-    always @(posedge dac_clk) begin
-        dac_debug_sticky <= dac_debug_sticky | {
-            !reset_upack,
-            transfer_start_dac && fifo_rd_possible,
-            fifo_rd_possible,
-            fifo_rd_rst_busy,
-            !fifo_rd_empty,
-            m_axis_valid,
-            fifo_rd_en,
-            m_axis_ready
-        };
-    end
-
-    cdc_sync_bits #(
-        .NUM_BITS(8)
-    ) sync_dac_debug_to_dma (
-        .clk_out(dma_clk),
-        .reset('b0),
-        .bits_in(dac_debug_sticky),
-        .bits_out(dac_debug_sticky_dma)
+    tx_pipeline_debug pipeline_debug (
+        .dma_clk(dma_clk),
+        .dac_clk(dac_clk),
+        .dma_events(dma_debug_events),
+        .dac_events(dac_debug_events),
+        .dma_sticky(dma_debug_sticky),
+        .dac_sticky_dma(dac_debug_sticky_dma)
     );
 
     assign discarded_block_count = debug_select
