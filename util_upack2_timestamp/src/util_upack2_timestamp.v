@@ -34,6 +34,11 @@ module util_upack2_timestamp #(
     **  With 2 channels enabled, a block consists of two samples for each channel.
     **  With 1 channel enabled, a block consists of four samples for each channel.
     */
+    /*
+    ** Bits 30:0 contain the timestamp interval. Bit 31 selects a read-only
+    ** TX pipeline diagnostics page on discarded_block_count. The Pluto block
+    ** design sources bit 31 from the otherwise-unused DAC GPIO output bit 0.
+    */
     input [31:0] timestamp_every,
 
     /* Discarded block count - in DMA clock domain */
@@ -201,8 +206,13 @@ module util_upack2_timestamp #(
     reg [31:0] timestamp_counter = 'h0;
 
     // Define signal for timestamp enabled / output required
+    wire debug_select;
+    wire [30:0] timestamp_interval;
+    assign debug_select = timestamp_every[31];
+    assign timestamp_interval = timestamp_every[30:0];
+
     wire timestamp_en;
-    assign timestamp_en = (timestamp_every != 0);
+    assign timestamp_en = (timestamp_interval != 0);
     wire timestamp_req;
     assign timestamp_req = (timestamp_counter == 0);
 
@@ -214,7 +224,7 @@ module util_upack2_timestamp #(
 
         end else if (s_axis_valid && s_axis_ready) begin
             // Timestamp counter enabled and data should be read, count sample
-            if (timestamp_counter >= timestamp_every) begin
+            if (timestamp_counter >= timestamp_interval) begin
                 // Reset counter
                 timestamp_counter <= 0;
 
@@ -232,14 +242,68 @@ module util_upack2_timestamp #(
     // Calculate if timestamp is too far in the future or late, if not it's good
     wire timestamp_late_or_too_early;
     assign timestamp_late_or_too_early =    (s_axis_data_timestamp < timestamp_dma) // Late
-                                         || (s_axis_data_timestamp > (timestamp_dma + (timestamp_every * TIMESTAMP_LIMIT_EVERY_MULTIPLE))); // Too early
+                                         || (s_axis_data_timestamp > (timestamp_dma + (timestamp_interval * TIMESTAMP_LIMIT_EVERY_MULTIPLE))); // Too early
 
     // Timestamp check discard register
     reg timestamp_check_discard = 'b0;
 
     // Discarded block count
     reg [31:0] timestamp_discard_count = 0;
-    assign discarded_block_count = timestamp_discard_count;
+
+    /*
+    ** Sticky TX pipeline activity. These bits are diagnostic observations,
+    ** not controls; normal data flow is unchanged. DAC-domain bits only ever
+    ** transition from zero to one, so each may be synchronized independently.
+    **
+    ** DMA byte [31:24], MSB first:
+    **   FIFO reset released, write possible, write-reset busy, FIFO full,
+    **   FIFO write, upstream ready, upstream valid, transfer request.
+    ** DAC byte [23:16], MSB first:
+    **   upack reset released, transfer-start tag, read possible, read-reset busy,
+    **   FIFO nonempty, downstream valid, FIFO read, downstream ready.
+    */
+    reg [7:0] dma_debug_sticky = 8'h00;
+    reg [7:0] dac_debug_sticky = 8'h00;
+    wire [7:0] dac_debug_sticky_dma;
+
+    always @(posedge dma_clk) begin
+        dma_debug_sticky <= dma_debug_sticky | {
+            !fifo_reset,
+            fifo_wr_possible,
+            fifo_wr_rst_busy,
+            fifo_wr_full,
+            fifo_wr_en,
+            s_axis_ready,
+            s_axis_valid,
+            s_axis_xfer_req
+        };
+    end
+
+    always @(posedge dac_clk) begin
+        dac_debug_sticky <= dac_debug_sticky | {
+            !reset_upack,
+            transfer_start_dac && fifo_rd_possible,
+            fifo_rd_possible,
+            fifo_rd_rst_busy,
+            !fifo_rd_empty,
+            m_axis_valid,
+            fifo_rd_en,
+            m_axis_ready
+        };
+    end
+
+    cdc_sync_bits #(
+        .NUM_BITS(8)
+    ) sync_dac_debug_to_dma (
+        .clk_out(dma_clk),
+        .reset('b0),
+        .bits_in(dac_debug_sticky),
+        .bits_out(dac_debug_sticky_dma)
+    );
+
+    assign discarded_block_count = debug_select
+        ? {dma_debug_sticky, dac_debug_sticky_dma, timestamp_discard_count[15:0]}
+        : timestamp_discard_count;
 
     // Manage timestamp check
     always @(posedge dma_clk) begin

@@ -170,6 +170,18 @@ module util_upack2_timestamp_tb;
             $writememb("util_upack2_timestamp_tv_vectors.mem", expected_outputs);
 
         // Got this far without error, all must be good
+        // Select the diagnostics page without enabling timestamp insertion.
+        timestamp_every = 32'h80000000;
+        #4;
+        if ((discarded_block_count[31:24] & 8'hcf) != 8'hcf) begin
+            $error("Test FAILED, missing DMA pipeline activity: %h", discarded_block_count[31:24]);
+            $finish;
+        end
+        if ((discarded_block_count[23:16] & 8'hef) != 8'hef) begin
+            $error("Test FAILED, missing DAC pipeline activity: %h", discarded_block_count[23:16]);
+            $finish;
+        end
+
         $display("Test PASSED");
 
         // All done
