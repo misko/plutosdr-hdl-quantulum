@@ -163,6 +163,14 @@ module util_upack2_timestamp_tb;
 
             // Wait for reads to complete
             #800;
+
+            // Disabled timestamping must be a transparent data path. Sample
+            // payload bits are arbitrary and must never be interpreted as a
+            // timestamp or increment the discard diagnostic.
+            if (i == 0 && discarded_block_count != 0) begin
+                $error("Test FAILED, discard count changed while timestamping was disabled: %h", discarded_block_count);
+                $finish;
+            end
         end
 
         // Write captured expected vectors out to file

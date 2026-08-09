@@ -108,7 +108,7 @@ module util_upack2_timestamp #(
         .rd_en(fifo_rd_en),
         .dout(fifo_rd_data),
 
-        .sleep('b0)
+        .sleep(1'b0)
     );
 
     // Calculate when a fifo write is possible, aka fifo isn't busy and isn't full
@@ -182,7 +182,7 @@ module util_upack2_timestamp #(
         .NUM_BITS(64)
     ) sync_grey_timestamp_dac_to_dma (
         .clk_out(dma_clk),
-        .reset('b0),
+        .reset(1'b0),
         .bits_in(timestamp_dac_grey_reg),
         .bits_out(timestamp_dma_grey)
     );
@@ -306,8 +306,10 @@ module util_upack2_timestamp #(
 
     // Manage timestamp check
     always @(posedge dma_clk) begin
-        if (!s_axis_xfer_req) begin
-            // Reset discard reg
+        if (!s_axis_xfer_req || !timestamp_en) begin
+            // Reset the per-transfer decision whenever there is no transfer
+            // or timestamping is disabled. Ordinary IQ payload words must not
+            // be interpreted as timestamps in transparent mode.
             timestamp_check_discard <= 'b0;
 
         end else begin
