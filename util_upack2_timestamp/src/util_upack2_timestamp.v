@@ -244,7 +244,11 @@ module util_upack2_timestamp #(
     assign timestamp_late_or_too_early =    (s_axis_data_timestamp < timestamp_dma) // Late
                                          || (s_axis_data_timestamp > (timestamp_dma + (timestamp_interval * TIMESTAMP_LIMIT_EVERY_MULTIPLE))); // Too early
 
-    // Timestamp check discard register
+    // Timestamp check decision. The 64-bit range comparison is deliberately
+    // registered before it can affect s_axis_ready. Driving ready directly
+    // from that comparison creates a BRAM -> 64-bit compare -> DMA ready path
+    // which is too long for the 100 MHz DMA clock on Zynq-7010.
+    reg timestamp_check_valid = 'b0;
     reg timestamp_check_discard = 'b0;
 
     // Discarded block count
@@ -304,22 +308,32 @@ module util_upack2_timestamp #(
         ? {dma_debug_sticky, dac_debug_sticky_dma, timestamp_discard_count[15:0]}
         : timestamp_discard_count;
 
-    // Manage timestamp check
+    // Manage timestamp check. AXI-stream requires the producer to hold valid
+    // data stable until ready is asserted, so timestamp words may safely take
+    // one evaluation cycle before the registered decision accepts them.
     always @(posedge dma_clk) begin
         if (!s_axis_xfer_req || !timestamp_en) begin
             // Reset the per-transfer decision whenever there is no transfer
             // or timestamping is disabled. Ordinary IQ payload words must not
             // be interpreted as timestamps in transparent mode.
+            timestamp_check_valid <= 'b0;
             timestamp_check_discard <= 'b0;
-
-        end else begin
-            if (s_axis_valid && s_axis_ready && timestamp_req) begin
-                // Data is valid and read is being requested, timestamp expected, set discard status
+        end else if (!timestamp_req) begin
+            timestamp_check_valid <= 'b0;
+            timestamp_check_discard <= 'b0;
+        end else if (!timestamp_check_valid) begin
+            if (s_axis_valid) begin
+                // Evaluate the held timestamp word, but do not accept it in
+                // this cycle. The registered result drives ready next cycle.
+                timestamp_check_valid <= 'b1;
                 timestamp_check_discard <= timestamp_late_or_too_early;
-
-                // Count discarded block
-                if (timestamp_late_or_too_early) timestamp_discard_count <= timestamp_discard_count + 1;
             end
+        end else if (s_axis_valid && s_axis_ready) begin
+            // Count each rejected timestamp exactly once, at its handshake.
+            if (timestamp_check_discard)
+                timestamp_discard_count <= timestamp_discard_count + 1;
+            timestamp_check_valid <= 'b0;
+            timestamp_check_discard <= 'b0;
         end
     end
 
@@ -331,11 +345,11 @@ module util_upack2_timestamp #(
     //      Timestamping is enabled, a timestamp check isn't required and a FIFO write is possible
     //      Timestamping is enabled, a timestamp check is required and the timestamp is late or way too early (too far in the future)
     //      Timestamping is enabled, a timestamp check is required, a FIFO write is possible and the timestamp is within allowed range (on time or early, but not too early)
-    assign s_axis_ready = s_axis_valid && (    (!timestamp_en && fifo_wr_possible)
-                                            || (timestamp_en && timestamp_check_discard)
-                                            || (timestamp_en && !timestamp_req && fifo_wr_possible)
-                                            || (timestamp_en && timestamp_req && timestamp_late_or_too_early)
-                                            || (timestamp_en && timestamp_req && fifo_wr_possible && !timestamp_late_or_too_early)
+    assign s_axis_ready = s_axis_valid && (
+                                               (!timestamp_en && fifo_wr_possible)
+                                            || ( timestamp_en && !timestamp_req && fifo_wr_possible)
+                                            || ( timestamp_en &&  timestamp_req && timestamp_check_valid
+                                                 && (timestamp_check_discard || fifo_wr_possible))
                                           );
 
     // Manage last timestamp and last timestamp valid flag
