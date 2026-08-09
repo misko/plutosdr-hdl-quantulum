@@ -13,7 +13,11 @@ module fifo_reset_sync (
     // Register the reset level in its source domain before the two-flop CDC.
     // Vivado reports CDC-10 when source-domain combinational reset logic feeds
     // the destination synchronizer directly.
-    reg source_reset_reg = 1'b0;
+    // Start asserted.  The write clock may run before the DAC/read clock after
+    // configuration; starting low would let reset_hold expire without the
+    // FIFO read domain ever seeing a clock.  Only a live source clock that has
+    // sampled the deasserted DAC reset is allowed to release the FIFO.
+    reg source_reset_reg = 1'b1;
     wire source_reset_sync;
     reg [4:0] reset_hold = 5'b11111;
 
