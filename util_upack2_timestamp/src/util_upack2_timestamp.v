@@ -140,7 +140,6 @@ module util_upack2_timestamp #(
 
     // Cross clock domain with timestamp
     wire [63:0] timestamp_dac_grey;
-    reg [63:0] timestamp_dac_grey_reg = 'h0;
     wire [63:0] timestamp_dma_grey;
     wire [63:0] timestamp_dma_temp;
     reg [63:0] timestamp_dma = 'h0;
@@ -154,20 +153,13 @@ module util_upack2_timestamp #(
         .out_grey(timestamp_dac_grey)
     );
 
-    // Register the Gray word in its source clock domain.  Feeding the
-    // synchronizer directly from the conversion XORs can expose it to
-    // combinational glitches when several binary counter bits change.
-    always @(posedge dac_clk) begin
-        timestamp_dac_grey_reg <= timestamp_dac_grey;
-    end
-
     // Synchronize grey code counter from DAC to DMA clock domains
     cdc_sync_bits #(
         .NUM_BITS(64)
     ) sync_grey_timestamp_dac_to_dma (
         .clk_out(dma_clk),
         .reset('b0),
-        .bits_in(timestamp_dac_grey_reg),
+        .bits_in(timestamp_dac_grey),
         .bits_out(timestamp_dma_grey)
     );
 
