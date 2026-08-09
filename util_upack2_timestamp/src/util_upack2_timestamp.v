@@ -66,6 +66,17 @@ module util_upack2_timestamp #(
     wire [(1 + 1 + 64 + (NUM_OF_CHANNELS*SAMPLE_DATA_WIDTH*SAMPLES_PER_CHANNEL))-1:0] fifo_rd_data;
     wire fifo_rd_en;
 
+    // The original design tied the XPM FIFO reset inactive and depended on
+    // power-up state.  A changed FPGA implementation exposed boot-dependent
+    // TX starvation on one of two otherwise identical radios.  Reset the FIFO
+    // deterministically in its write-clock domain instead.
+    wire fifo_reset;
+    fifo_reset_sync sync_fifo_reset (
+        .source_reset(reset),
+        .fifo_wr_clk(dma_clk),
+        .fifo_reset(fifo_reset)
+    );
+
     // DMA -> DAC FIFO
     xpm_fifo_async #(
         .FIFO_MEMORY_TYPE("block"),
@@ -79,7 +90,7 @@ module util_upack2_timestamp #(
     )
     fifo (
         .wr_clk(dma_clk),
-        .rst('b0), // Unused reset input, syncronous to wr_clk
+        .rst(fifo_reset),
         .wr_rst_busy(fifo_wr_rst_busy), // If high wr_en should not be asserted
         .wr_en(fifo_wr_en),
         .din(fifo_wr_data),
@@ -140,6 +151,7 @@ module util_upack2_timestamp #(
 
     // Cross clock domain with timestamp
     wire [63:0] timestamp_dac_grey;
+    reg [63:0] timestamp_dac_grey_reg = 'h0;
     wire [63:0] timestamp_dma_grey;
     wire [63:0] timestamp_dma_temp;
     reg [63:0] timestamp_dma = 'h0;
@@ -153,13 +165,19 @@ module util_upack2_timestamp #(
         .out_grey(timestamp_dac_grey)
     );
 
+    // Register the Gray word in its source clock domain. Feeding the
+    // synchronizer directly from conversion XORs creates CDC-10 paths.
+    always @(posedge dac_clk) begin
+        timestamp_dac_grey_reg <= timestamp_dac_grey;
+    end
+
     // Synchronize grey code counter from DAC to DMA clock domains
     cdc_sync_bits #(
         .NUM_BITS(64)
     ) sync_grey_timestamp_dac_to_dma (
         .clk_out(dma_clk),
         .reset('b0),
-        .bits_in(timestamp_dac_grey),
+        .bits_in(timestamp_dac_grey_reg),
         .bits_out(timestamp_dma_grey)
     );
 
