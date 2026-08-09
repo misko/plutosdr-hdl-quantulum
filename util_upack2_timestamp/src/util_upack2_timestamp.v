@@ -73,6 +73,7 @@ module util_upack2_timestamp #(
     wire fifo_reset;
     fifo_reset_sync sync_fifo_reset (
         .source_reset(reset),
+        .source_clk(dac_clk),
         .fifo_wr_clk(dma_clk),
         .fifo_reset(fifo_reset)
     );

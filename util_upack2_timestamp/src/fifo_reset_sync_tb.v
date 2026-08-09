@@ -2,14 +2,17 @@
 
 module fifo_reset_sync_tb;
     reg fifo_wr_clk = 1'b0;
+    reg source_clk = 1'b0;
     reg source_reset = 1'b0;
     wire fifo_reset;
     integer high_cycles;
 
     always #5 fifo_wr_clk = ~fifo_wr_clk;
+    always #7 source_clk = ~source_clk;
 
     fifo_reset_sync dut (
         .source_reset(source_reset),
+        .source_clk(source_clk),
         .fifo_wr_clk(fifo_wr_clk),
         .fifo_reset(fifo_reset)
     );
