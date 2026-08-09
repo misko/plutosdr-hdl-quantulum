@@ -173,7 +173,7 @@ module util_upack2_timestamp_tb;
         // Select the diagnostics page without enabling timestamp insertion.
         timestamp_every = 32'h80000000;
         #4;
-        if ((discarded_block_count[31:24] & 8'hcf) != 8'hcf) begin
+        if ((discarded_block_count[31:24] & 8'hcb) != 8'hcb) begin
             $error("Test FAILED, missing DMA pipeline activity: %h", discarded_block_count[31:24]);
             $finish;
         end

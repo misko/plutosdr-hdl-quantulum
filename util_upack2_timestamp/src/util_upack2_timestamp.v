@@ -257,7 +257,7 @@ module util_upack2_timestamp #(
     **
     ** DMA byte [31:24], MSB first:
     **   FIFO reset released, write possible, write-reset busy, FIFO full,
-    **   FIFO write, upstream ready, upstream valid, transfer request.
+    **   FIFO write, timestamp enabled, upstream valid, transfer request.
     ** DAC byte [23:16], MSB first:
     **   upack reset released, transfer-start tag, read possible, read-reset busy,
     **   FIFO nonempty, downstream valid, FIFO read, downstream ready.
@@ -273,7 +273,7 @@ module util_upack2_timestamp #(
         fifo_wr_rst_busy,
         fifo_wr_full,
         fifo_wr_en,
-        s_axis_ready,
+        timestamp_en,
         s_axis_valid,
         s_axis_xfer_req
     };
@@ -288,6 +288,9 @@ module util_upack2_timestamp #(
         m_axis_ready
     };
 
+    // Preserve this boundary so synthesis cannot absorb the 64-bit timestamp
+    // comparison from the timing-critical s_axis_ready path into diagnostics.
+    (* KEEP_HIERARCHY = "yes" *)
     tx_pipeline_debug pipeline_debug (
         .dma_clk(dma_clk),
         .dac_clk(dac_clk),
