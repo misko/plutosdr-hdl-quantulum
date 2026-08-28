@@ -11,6 +11,10 @@ module util_cpack2_timestamp #(
     // DMA clock
     input dma_clk,
 
+    // Reset from the ADC core, synchronous to adc_clk.  Sampling-rate changes
+    // assert this signal while the source clock is reconfigured.
+    input reset,
+
     // Timestamp to stamp data stream with every timestamp_every blocks, in ADC clock domain
     input [63:0] timestamp,
 
@@ -55,6 +59,18 @@ module util_cpack2_timestamp #(
     wire [(1 + 64 + (NUM_OF_CHANNELS*SAMPLE_DATA_WIDTH*SAMPLES_PER_CHANNEL))-1:0] fifo_rd_data;
     wire fifo_rd_en;
 
+    // The timestamp FIFO crosses the reconfigurable AD9361 sample clock into
+    // the fixed DMA clock.  Retaining XPM pointer state across an ADC clock
+    // reset can strand the FIFO empty flag after a rate change.  Reset the FIFO
+    // deterministically in its write-clock domain, just as the TX timestamp
+    // FIFO is reset for DAC clock changes.
+    wire fifo_reset;
+    rx_fifo_reset sync_fifo_reset (
+        .reset(reset),
+        .clk(adc_clk),
+        .fifo_reset(fifo_reset)
+    );
+
     // ADC -> DMA FIFO
     xpm_fifo_async #(
         .FIFO_MEMORY_TYPE("block"),
@@ -68,7 +84,7 @@ module util_cpack2_timestamp #(
     )
     fifo (
         .wr_clk(adc_clk),
-        .rst('b0), // Unused reset input, syncronous to wr_clk
+        .rst(fifo_reset),
         .wr_rst_busy(fifo_wr_rst_busy), // If high wr_en should not be asserted
         .wr_en(fifo_wr_en),
         .din(fifo_wr_data),
@@ -117,7 +133,7 @@ module util_cpack2_timestamp #(
 
     // Manage timestamp counter
     always @(posedge dma_clk) begin
-        if (!timestamp_en) begin
+        if (!timestamp_en || fifo_rd_rst_busy) begin
             // Timestamping disabled, reset timestamp counter
             timestamp_counter <= 0;
 
