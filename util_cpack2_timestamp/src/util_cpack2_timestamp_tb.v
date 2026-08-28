@@ -3,6 +3,7 @@
 module util_cpack2_timestamp_tb;
     reg adc_clk;
     reg dma_clk;
+    reg reset;
     reg [63:0] timestamp;
     reg [31:0] timestamp_every;
     reg packed_fifo_wr_en;
@@ -21,6 +22,7 @@ module util_cpack2_timestamp_tb;
     ) uut (
         .adc_clk(adc_clk),
         .dma_clk(dma_clk),
+        .reset(reset),
         .timestamp(timestamp),
         .timestamp_every(timestamp_every),
         .packed_fifo_wr_en(packed_fifo_wr_en),
@@ -71,6 +73,7 @@ module util_cpack2_timestamp_tb;
         // Reset signals
         adc_clk = 'b0;
         dma_clk = 'b0;
+        reset = 'b1;
         timestamp = 0;
         timestamp_every = 0;
         packed_fifo_wr_en = 'b0;
@@ -78,8 +81,9 @@ module util_cpack2_timestamp_tb;
         packed_fifo_wr_data = 'h0;
         packed_timestamped_fifo_wr_overflow = 'b0;
 
-        // Wait for rising edge of ADC clock
-        @(posedge adc_clk);
+        // Release the FIFO only after the ADC clock is live.
+        repeat (2) @(posedge adc_clk);
+        reset = 'b0;
 
         // Wait for FIFO to come out of reset
         #800;

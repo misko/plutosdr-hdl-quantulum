@@ -63,14 +63,14 @@ module cdc_sync_data_closed #(
     // Syncronize request and acknowledge between domains
     cdc_sync_bits sync_req_in_to_out (
         .clk_out(clk_out),
-        .reset(0),
+        .reset(1'b0),
         .bits_in(req_in),
         .bits_out(req_out)
     );
 
     cdc_sync_bits sync_ack_out_to_in (
         .clk_out(clk_in),
-        .reset(0),
+        .reset(1'b0),
         .bits_in(ack_out),
         .bits_out(ack_in)
     );
@@ -113,4 +113,3 @@ module cdc_sync_data_closed #(
     assign bits_out = output_reg;
     assign valid = output_valid_reg;
 endmodule
-

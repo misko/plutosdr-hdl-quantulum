@@ -34,6 +34,11 @@ module util_upack2_timestamp #(
     **  With 2 channels enabled, a block consists of two samples for each channel.
     **  With 1 channel enabled, a block consists of four samples for each channel.
     */
+    /*
+    ** Bits 30:0 contain the timestamp interval. Bit 31 selects a read-only
+    ** TX pipeline diagnostics page on discarded_block_count. The Pluto block
+    ** design sources bit 31 from the otherwise-unused DAC GPIO output bit 0.
+    */
     input [31:0] timestamp_every,
 
     /* Discarded block count - in DMA clock domain */
@@ -66,6 +71,18 @@ module util_upack2_timestamp #(
     wire [(1 + 1 + 64 + (NUM_OF_CHANNELS*SAMPLE_DATA_WIDTH*SAMPLES_PER_CHANNEL))-1:0] fifo_rd_data;
     wire fifo_rd_en;
 
+    // The original design tied the XPM FIFO reset inactive and depended on
+    // power-up state.  A changed FPGA implementation exposed boot-dependent
+    // TX starvation on one of two otherwise identical radios.  Reset the FIFO
+    // deterministically in its write-clock domain instead.
+    wire fifo_reset;
+    fifo_reset_sync sync_fifo_reset (
+        .source_reset(reset),
+        .source_clk(dac_clk),
+        .fifo_wr_clk(dma_clk),
+        .fifo_reset(fifo_reset)
+    );
+
     // DMA -> DAC FIFO
     xpm_fifo_async #(
         .FIFO_MEMORY_TYPE("block"),
@@ -79,7 +96,7 @@ module util_upack2_timestamp #(
     )
     fifo (
         .wr_clk(dma_clk),
-        .rst('b0), // Unused reset input, syncronous to wr_clk
+        .rst(fifo_reset),
         .wr_rst_busy(fifo_wr_rst_busy), // If high wr_en should not be asserted
         .wr_en(fifo_wr_en),
         .din(fifo_wr_data),
@@ -91,7 +108,7 @@ module util_upack2_timestamp #(
         .rd_en(fifo_rd_en),
         .dout(fifo_rd_data),
 
-        .sleep('b0)
+        .sleep(1'b0)
     );
 
     // Calculate when a fifo write is possible, aka fifo isn't busy and isn't full
@@ -140,6 +157,7 @@ module util_upack2_timestamp #(
 
     // Cross clock domain with timestamp
     wire [63:0] timestamp_dac_grey;
+    reg [63:0] timestamp_dac_grey_reg = 'h0;
     wire [63:0] timestamp_dma_grey;
     wire [63:0] timestamp_dma_temp;
     reg [63:0] timestamp_dma = 'h0;
@@ -153,13 +171,19 @@ module util_upack2_timestamp #(
         .out_grey(timestamp_dac_grey)
     );
 
+    // Register the Gray word in its source clock domain. Feeding the
+    // synchronizer directly from conversion XORs creates CDC-10 paths.
+    always @(posedge dac_clk) begin
+        timestamp_dac_grey_reg <= timestamp_dac_grey;
+    end
+
     // Synchronize grey code counter from DAC to DMA clock domains
     cdc_sync_bits #(
         .NUM_BITS(64)
     ) sync_grey_timestamp_dac_to_dma (
         .clk_out(dma_clk),
-        .reset('b0),
-        .bits_in(timestamp_dac_grey),
+        .reset(1'b0),
+        .bits_in(timestamp_dac_grey_reg),
         .bits_out(timestamp_dma_grey)
     );
 
@@ -182,8 +206,13 @@ module util_upack2_timestamp #(
     reg [31:0] timestamp_counter = 'h0;
 
     // Define signal for timestamp enabled / output required
+    wire debug_select;
+    wire [30:0] timestamp_interval;
+    assign debug_select = timestamp_every[31];
+    assign timestamp_interval = timestamp_every[30:0];
+
     wire timestamp_en;
-    assign timestamp_en = (timestamp_every != 0);
+    assign timestamp_en = (timestamp_interval != 0);
     wire timestamp_req;
     assign timestamp_req = (timestamp_counter == 0);
 
@@ -195,7 +224,7 @@ module util_upack2_timestamp #(
 
         end else if (s_axis_valid && s_axis_ready) begin
             // Timestamp counter enabled and data should be read, count sample
-            if (timestamp_counter >= timestamp_every) begin
+            if (timestamp_counter >= timestamp_interval) begin
                 // Reset counter
                 timestamp_counter <= 0;
 
@@ -213,29 +242,103 @@ module util_upack2_timestamp #(
     // Calculate if timestamp is too far in the future or late, if not it's good
     wire timestamp_late_or_too_early;
     assign timestamp_late_or_too_early =    (s_axis_data_timestamp < timestamp_dma) // Late
-                                         || (s_axis_data_timestamp > (timestamp_dma + (timestamp_every * TIMESTAMP_LIMIT_EVERY_MULTIPLE))); // Too early
+                                         || (s_axis_data_timestamp > (timestamp_dma + (timestamp_interval * TIMESTAMP_LIMIT_EVERY_MULTIPLE))); // Too early
 
-    // Timestamp check discard register
+    // Timestamp check decision. The 64-bit range comparison is deliberately
+    // registered before it can affect s_axis_ready. Driving ready directly
+    // from that comparison creates a BRAM -> 64-bit compare -> DMA ready path
+    // which is too long for the 100 MHz DMA clock on Zynq-7010.
+    reg timestamp_decision_valid = 'b0;
+    reg timestamp_decision_discard = 'b0;
+    // Once a timestamp is rejected, discard its complete payload interval.
+    // This state persists until the next timestamp decision replaces it.
     reg timestamp_check_discard = 'b0;
 
     // Discarded block count
     reg [31:0] timestamp_discard_count = 0;
-    assign discarded_block_count = timestamp_discard_count;
 
-    // Manage timestamp check
+    /*
+    ** Sticky TX pipeline activity. These bits are diagnostic observations,
+    ** not controls; normal data flow is unchanged. DAC-domain bits only ever
+    ** transition from zero to one, so each may be synchronized independently.
+    **
+    ** DMA byte [31:24], MSB first:
+    **   FIFO reset released, write possible, write-reset busy, FIFO full,
+    **   FIFO write, timestamp enabled, upstream valid, transfer request.
+    ** DAC byte [23:16], MSB first:
+    **   upack reset released, transfer-start tag, read possible, read-reset busy,
+    **   FIFO nonempty, downstream valid, FIFO read, downstream ready.
+    */
+    wire [7:0] dma_debug_events;
+    wire [7:0] dac_debug_events;
+    wire [7:0] dma_debug_sticky;
+    wire [7:0] dac_debug_sticky_dma;
+
+    assign dma_debug_events = {
+        !fifo_reset,
+        fifo_wr_possible,
+        fifo_wr_rst_busy,
+        fifo_wr_full,
+        fifo_wr_en,
+        timestamp_en,
+        s_axis_valid,
+        s_axis_xfer_req
+    };
+    assign dac_debug_events = {
+        !reset_upack,
+        transfer_start_dac && fifo_rd_possible,
+        fifo_rd_possible,
+        fifo_rd_rst_busy,
+        !fifo_rd_empty,
+        m_axis_valid,
+        fifo_rd_en,
+        m_axis_ready
+    };
+
+    // Preserve this boundary so synthesis cannot absorb the 64-bit timestamp
+    // comparison from the timing-critical s_axis_ready path into diagnostics.
+    (* KEEP_HIERARCHY = "yes" *)
+    tx_pipeline_debug pipeline_debug (
+        .dma_clk(dma_clk),
+        .dac_clk(dac_clk),
+        .dma_events(dma_debug_events),
+        .dac_events(dac_debug_events),
+        .dma_sticky(dma_debug_sticky),
+        .dac_sticky_dma(dac_debug_sticky_dma)
+    );
+
+    assign discarded_block_count = debug_select
+        ? {dma_debug_sticky, dac_debug_sticky_dma, timestamp_discard_count[15:0]}
+        : timestamp_discard_count;
+
+    // Manage timestamp check. AXI-stream requires the producer to hold valid
+    // data stable until ready is asserted, so timestamp words may safely take
+    // one evaluation cycle before the registered decision accepts them.
     always @(posedge dma_clk) begin
-        if (!s_axis_xfer_req) begin
-            // Reset discard reg
+        if (!s_axis_xfer_req || !timestamp_en) begin
+            // Reset the per-transfer decision whenever there is no transfer
+            // or timestamping is disabled. Ordinary IQ payload words must not
+            // be interpreted as timestamps in transparent mode.
+            timestamp_decision_valid <= 'b0;
+            timestamp_decision_discard <= 'b0;
             timestamp_check_discard <= 'b0;
-
-        end else begin
-            if (s_axis_valid && s_axis_ready && timestamp_req) begin
-                // Data is valid and read is being requested, timestamp expected, set discard status
-                timestamp_check_discard <= timestamp_late_or_too_early;
-
-                // Count discarded block
-                if (timestamp_late_or_too_early) timestamp_discard_count <= timestamp_discard_count + 1;
+        end else if (!timestamp_req) begin
+            timestamp_decision_valid <= 'b0;
+            timestamp_decision_discard <= 'b0;
+        end else if (!timestamp_decision_valid) begin
+            if (s_axis_valid) begin
+                // Evaluate the held timestamp word, but do not accept it in
+                // this cycle. The registered result drives ready next cycle.
+                timestamp_decision_valid <= 'b1;
+                timestamp_decision_discard <= timestamp_late_or_too_early;
             end
+        end else if (s_axis_valid && s_axis_ready) begin
+            // Count each rejected timestamp exactly once, at its handshake.
+            if (timestamp_decision_discard)
+                timestamp_discard_count <= timestamp_discard_count + 1;
+            timestamp_check_discard <= timestamp_decision_discard;
+            timestamp_decision_valid <= 'b0;
+            timestamp_decision_discard <= 'b0;
         end
     end
 
@@ -247,11 +350,12 @@ module util_upack2_timestamp #(
     //      Timestamping is enabled, a timestamp check isn't required and a FIFO write is possible
     //      Timestamping is enabled, a timestamp check is required and the timestamp is late or way too early (too far in the future)
     //      Timestamping is enabled, a timestamp check is required, a FIFO write is possible and the timestamp is within allowed range (on time or early, but not too early)
-    assign s_axis_ready = s_axis_valid && (    (!timestamp_en && fifo_wr_possible)
-                                            || (timestamp_en && timestamp_check_discard)
-                                            || (timestamp_en && !timestamp_req && fifo_wr_possible)
-                                            || (timestamp_en && timestamp_req && timestamp_late_or_too_early)
-                                            || (timestamp_en && timestamp_req && fifo_wr_possible && !timestamp_late_or_too_early)
+    assign s_axis_ready = s_axis_valid && (
+                                               (!timestamp_en && fifo_wr_possible)
+                                            || ( timestamp_en && !timestamp_req
+                                                 && (timestamp_check_discard || fifo_wr_possible))
+                                            || ( timestamp_en &&  timestamp_req && timestamp_decision_valid
+                                                 && (timestamp_decision_discard || fifo_wr_possible))
                                           );
 
     // Manage last timestamp and last timestamp valid flag
