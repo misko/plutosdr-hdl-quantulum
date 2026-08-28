@@ -42,8 +42,11 @@ module rx_fifo_reset_tb;
         // A sampling-clock reset immediately rearms the complete hold window.
         @(negedge clk);
         reset = 1'b1;
-        @(posedge clk);
         require_reset(1'b1);
+        repeat (5) begin
+            @(posedge clk);
+            require_reset(1'b1);
+        end
         @(negedge clk);
         reset = 1'b0;
         for (cycle = 0; cycle < 4; cycle = cycle + 1) begin
@@ -56,15 +59,19 @@ module rx_fifo_reset_tb;
         // Reassertion during release restarts, rather than shortens, the hold.
         @(negedge clk);
         reset = 1'b1;
-        @(posedge clk);
-        require_reset(1'b1);
+        repeat (5) begin
+            @(posedge clk);
+            require_reset(1'b1);
+        end
         @(negedge clk);
         reset = 1'b0;
         repeat (2) @(posedge clk);
         @(negedge clk);
         reset = 1'b1;
-        @(posedge clk);
-        require_reset(1'b1);
+        repeat (5) begin
+            @(posedge clk);
+            require_reset(1'b1);
+        end
         @(negedge clk);
         reset = 1'b0;
         repeat (4) begin
